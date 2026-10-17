@@ -319,6 +319,16 @@ fn emit_quorum_reached(
         .publish((symbol_short!("qrm_rchd"), proposal_id), payload);
 }
 
+// ── Delegation event (#delegation) ─────────────────────────────────
+
+/// Emitted when a delegator changes (or clears) their vote delegation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventDelegationChanged {
+    pub delegator: Address,
+    pub delegatee: Option<Address>,
+}
+
 // ── Stable interface (v1.1.0) ───────────────────────────────────────
 //
 // v1.1.0 adds:
@@ -1119,9 +1129,26 @@ impl TalosGovernance {
     }
 
     pub fn delegate(env: Env, delegator: Address, delegatee: Address) {
-        pause_control::check_not_paused(&env, PAUSE_GOVERNANCE_CONFIG);
+        pause_control::check_not_paused(&env, PAUSE_GOVERNANCE_VOTING);
         delegator.require_auth();
+        if delegator == delegatee {
+            panic!("Cannot delegate to self");
+        }
         env.storage().persistent().set(&DataKey::Delegation(delegator.clone()), &delegatee);
+        emit_delegation_changed(&env, delegator, Some(delegatee));
+    }
+
+    /// Remove the caller's delegation, restoring their own vote weight.
+    ///
+    /// Emits `delegation_changed` with `delegatee = None`.  Idempotent: calling
+    /// it when no delegation exists still emits the event and succeeds.
+    pub fn undelegate(env: Env, delegator: Address) {
+        pause_control::check_not_paused(&env, PAUSE_GOVERNANCE_VOTING);
+        delegator.require_auth();
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Delegation(delegator.clone()));
+        emit_delegation_changed(&env, delegator, None);
     }
 
     pub fn update_voting_power(env: Env, admin: Address, account: Address, new_balance: i128) {
@@ -1146,6 +1173,15 @@ impl TalosGovernance {
         env.storage().persistent().set(&DataKey::Checkpoint(account.clone(), count), &ck);
         env.storage().persistent().set(&DataKey::CheckpointCount(account.clone()), &(count + 1));
     }
+
+fn emit_delegation_changed(env: &Env, delegator: Address, delegatee: Option<Address>) {
+    let payload = EventDelegationChanged {
+        delegator: delegator.clone(),
+        delegatee,
+    };
+    env.events()
+        .publish((symbol_short!("deleg_chg"), delegator), payload);
+}
 
     fn update_status_if_quorum(env: &Env, proposal: &mut Proposal) {
         let config = Self::require_config(env);
@@ -2341,6 +2377,111 @@ mod tests {
             }])
             .try_cache_token_balance(&admin, &90u32, &voter, &(-1i128));
         assert!(result.is_err(), "negative balance cache must be rejected");
+    }
+
+    // ── Delegation tests ─────────────────────────────────────────
+
+    #[test]
+    fn delegate_stores_delegation_and_emits_event() {
+        let (env, contract_id, _admin, _pulse, client) = setup();
+        let delegator = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &delegator,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "delegate",
+                    args: (delegator.clone(), delegatee.clone()).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .delegate(&delegator, &delegatee);
+
+        let events = env.events().all();
+        let ev = events.iter().find(|(cid, topics, _)| {
+            if *cid != contract_id { return false; }
+            if let Some(t0) = topics.get(0) {
+                let s: soroban_sdk::Symbol = soroban_sdk::FromVal::from_val(&env, &t0);
+                s == symbol_short!("deleg_chg")
+            } else { false }
+        });
+        assert!(ev.is_some(), "delegation_changed event must be emitted");
+
+        let (_, topics, data) = ev.unwrap();
+        let topic_delegator: Address =
+            soroban_sdk::FromVal::from_val(&env, &topics.get(1).unwrap());
+        assert_eq!(topic_delegator, delegator);
+
+        let payload: EventDelegationChanged = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(payload.delegator, delegator);
+        assert_eq!(payload.delegatee, Some(delegatee));
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot delegate to self")]
+    fn self_delegation_is_rejected() {
+        let (env, contract_id, _admin, _pulse, client) = setup();
+        let delegator = Address::generate(&env);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &delegator,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "delegate",
+                    args: (delegator.clone(), delegator.clone()).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .delegate(&delegator, &delegator);
+    }
+
+    #[test]
+    fn undelegate_removes_delegation_and_emits_event() {
+        let (env, contract_id, _admin, _pulse, client) = setup();
+        let delegator = Address::generate(&env);
+        let delegatee = Address::generate(&env);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &delegator,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "delegate",
+                    args: (delegator.clone(), delegatee.clone()).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .delegate(&delegator, &delegatee);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &delegator,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "undelegate",
+                    args: (delegator.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .undelegate(&delegator);
+
+        let events = env.events().all();
+        let ev = events.iter().rev().find(|(cid, topics, _)| {
+            if *cid != contract_id { return false; }
+            if let Some(t0) = topics.get(0) {
+                let s: soroban_sdk::Symbol = soroban_sdk::FromVal::from_val(&env, &t0);
+                s == symbol_short!("deleg_chg")
+            } else { false }
+        });
+        assert!(ev.is_some(), "undelegate must emit delegation_changed");
+
+        let (_, _, data) = ev.unwrap();
+        let payload: EventDelegationChanged = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(payload.delegator, delegator);
+        assert_eq!(payload.delegatee, None);
     }
 
     /// Governance initialization with quorum_threshold = 0 must fail.

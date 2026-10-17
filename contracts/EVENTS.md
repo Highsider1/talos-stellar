@@ -1,6 +1,6 @@
 # Talos Contract Event Indexing Specification
 
-**Spec version:** 1.3.0
+**Spec version:** 1.4.0
 **Applies to:** talos_registry, talos_governance, talos_name_service, talos_dividends
 
 ## 1. Event envelope
@@ -26,8 +26,8 @@ Every Soroban event an indexer receives has:
   `div_clm` puts `(epoch_id, patron)` at `topics[1..2]`.
 - **`data` is a positional tuple** decoded strictly left-to-right using the
   per-event `data` column below. Field order is part of the stable contract:
-  it is never reordered except under a breaking (major) version bump per §4.
-- **Decoded JSON shape.** The canonical fixtures (`contracts/fixtures/`) retain the raw envelope cursor fields `ledger_sequence`, `tx_index_in_ledger`, and `event_index_in_tx`. The helper returns decoded fields with the parsed cursor so consumers can sort and paginate by the full tuple. Addresses stay as `G…`/`C…` strings, symbols stay as strings,
+  it is never reordered except under a breaking (major) version bump per $4.
+- `decionded JSON shape.** The canonical fixtures (`contracts/fixtures/`) retain the raw envelope cursor fields `ledger_sequence`, `tx_index_in_ledger`, and `event_index_in_tx`. The helper returns decoded fields with the parsed cursor so consumers can sort and paginate by the full tuple. Addresses stay as `G`../`C`...` strings, symbols stay as strings,
   and `u32`/`u64`/`i128` are numbers. The `event-query` helper decodes a raw
   event and rejects anything that does not match.
 - **Malformed payloads** (empty topics, `topics[0]` not a symbol, wrong topic
@@ -37,18 +37,9 @@ Every Soroban event an indexer receives has:
 ## 2. Ordering guarantees
 
 Indexers MUST treat `(ledger_sequence, tx_index_in_ledger, event_index_in_tx)`
-as the canonical cursor. `tx_index_in_ledger` and `event_index_in_tx` are
-zero-based positions supplied by the Soroban event envelope. They represent
-ledger transaction order and event publication order within a transaction,
-including events from nested contract invocations. An operation that publishes
-multiple compatibility events keeps that order stable: `tls_crt` precedes
-`tls_crt2`, and `name_reg` precedes `name_reg2`.
+as the canonical cursor. `tx_index_in_ledger` and `event_index_in_tx` are zero-based positions supplied by the Soroban event envelope. They represent ledger transaction order and event publication order within a transaction, including events from nested contract invocations. An operation that publishes multiple compatibility events keeps that order stable: `tls_crt` precedes `tls_crt2`, and `name_reg` precedes `name_reg2`.
 
-Consumers MUST sort and paginate by the full cursor, not response arrival order,
-topic, contract, or fixture-file order. Events are strictly monotonic on this tuple and
-never reordered within a ledger. On restart, an indexer resumes from the
-last committed cursor and replays forward — this is safe because processing
-is idempotent per cursor (see §4).
+Consumers MUST sort and paginate by the full cursor, not response arrival order, topic, contract, or fixture-file order. Events are strictly monotonic on this tuple and never reordered within a ledger. On restart, an indexer resumes from the last committed cursor and replays forward — this is safe because processing is idempotent per cursor (see $4).
 
 ## 3. Event catalog
 
@@ -76,8 +67,14 @@ is idempotent per cursor (see §4).
 | (`vote`, proposal_id: u32) | (voter: Address, choice: VoteChoice, weight: i128) |
 | (`prop_stat`, proposal_id: u32) | status: ProposalStatus |
 | (`qrm_rchd`, proposal_id: u32) | (proposal_id: u32, votes_cast: i128, quorum_threshold: i128, approval_bps: i128) |
+| (`delegation`, delegator: Address) | (delegator: Address, delegatee: Address) |
+| (`undelegation`, delegator: Address) | (delegator: Address, previous_delegatee: Address) |
 
-`qrm_rchd` is emitted **at most once** per proposal, on the first vote that brings `votes_cast` to or above `quorum_threshold`. A `DataKey::QuorumReached(proposal_id)` sentinel prevents re-emission for subsequent votes.
+`qrm_rchd` - emitted **at most once** per proposal, on the first vote that brings `votes_cast` to or above `quorum_threshold`. A `DataKey::QuorumReached(proposal_id)` sentinel prevents re-emission for subsequent votes.
+
+`delegation` - emitted when a delegator sets or replaces their delegatee. Self-delegation (`delegator == delegatee`) is rejected and emits no event. The delegator is placed at `topics[1]` and also repeated in `data.0` so indexers can correlate both ways.
+
+`undelegation` - emitted when a delegator clears their delegation. `previous_delegatee` is the delegatee before removal. The delegator is placed at `topics[1]` and also repeated in `data.0`.
 
 ### talos_name_service
 | topics | data |
@@ -93,7 +90,7 @@ is idempotent per cursor (see §4).
 | (`name_fee`, talos_id: u32) | (payer: Address, asset: Address, fee: i128) |
 | (`dep_path`,) | (deprecated: String, replacement: String) |
 
-**`pause_on` semantics:**
+**@pause_on semantics:**
 - `domain` identifies the paused write path (`NameRegistration`).
 - `expires_at` is the Unix timestamp when the pause automatically lifts.
   A value of `0` means the pause is indefinite (only settable by the admin).
@@ -122,10 +119,10 @@ additive-only (new variants are appended at the end).
 
 ## 4. Compatibility & versioning rules
 
-- **Additive** (new event, new trailing data field): minor version bump, backward compatible — old indexers keep working, ignore the new field.
-- **Breaking** (removed/reordered/type-changed field, repurposed topic symbol): a **new topic symbol** must be introduced (e.g. `tls_crt` → `tls_crt2`); the old symbol is retired but its meaning is never reused. Major version bump.
+- `Additive` (new event, new trailing data field): minor version bump, backward compatible — old indexers keep working, ignore the new field.
+- `Breaking` (removed/reordered/type-changed field, repurposed topic symbol): a **new topic symbol** must be introduced (e.g. `tls_crt` → `tls_crt2`); the old symbol is retired but its meaning is never reused. Major version bump.
 - Every event is emitted from exactly one code path per contract; enums used in data (e.g. `AdminAction`, `ProposalStatus`) are `#[contracttype]` and additive-only (new variants appended at the end).
-- **Fixture format versioning note:** the canonical fixture file
+- `Fixture format versioning note:` the canonical fixture file
   `contracts/fixtures/event_fixtures.json` carries a top-level `spec_version`
   field. Any change that alters how events decode (a new topic position, a
   reordered/retargeted data field, a new event family, or a changed type)
@@ -137,17 +134,17 @@ additive-only (new variants are appended at the end).
 
 ## 5. Conformance fixtures
 
-See `contracts/fixtures/event_fixtures.json` — a versioned fixture document
-with:
+- See `contracts/fixtures/event_fixtures.json` — a versioned fixture document
+  with:
 
-- `event_catalog` — the canonical topic-position + data-shape catalog per
-  event family (`creation`, `update`, `governance`, `payment`).
-- `fixtures` — one worked example per event type. Each entry carries the raw
-  `topics`/`data` plus a fully-decoded `decoded` payload; any indexer
-  implementation should decode the raw form and match `decoded` exactly.
-- `empty_ranges` — representative ledger ranges that must return zero events.
-- `malformed` — payloads that must be rejected (empty topics, non-symbol
-  `topics[0]`, topic-type mismatch, wrong data arity/type).
+-  `event_catalog` — the canonical topic-position + data-shape catalog per
+   event family (`creation`, `update`, `governance`, `payment`).
+-  `fixtures` — one worked example per event type. Each entry carries the raw
+   `topics`/`data` plus a fully-decoded `decoded` payload; any indexer
+   implementation should decode the raw form and match `decoded` exactly.
+-  `empty_ranges` — representative ledger ranges that must return zero events.
+-  `malformed` — payloads that must be rejected (empty topics, non-symbol
+   `topics[0]`, topic-type mismatch, wrong data arity/type).
 
 ### Bounded query helper
 
@@ -156,13 +153,13 @@ with:
 - `parseFixtureSet` / `parseEventFixture` — validate the document and decode
   each event against the catalog (throws on malformed payloads / unknown
   events).
-- `queryEvents(set, { contract?, topic?, fromLedger, toLedger, pageSize, page? })` —
+- `queryEvents(set, { contract?, topic?, fromLedger, toLedger, pageSize, page? }) —
   queries by topic and **inclusive** ledger range with 1-based pagination.
 - **Bounds are enforced, never silently clamped:** both `fromLedger` and
   `toLedger` are required (an unbounded range throws `UnboundedRangeError`);
   `pageSize` is required and must fall within
   `[bounds.min_page_size, bounds.max_page_size]` (an unbounded page size
-  throws `UnboundedPageSizeError`); the span
+  throws `UnroundedPageSizeError`); the span
   `toLedger - fromLedger + 1` cannot exceed `bounds.max_ledger_span`.
 
 Run the fixture and helper tests with:
