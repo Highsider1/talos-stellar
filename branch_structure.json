@@ -1,0 +1,18 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-857-feat-contracts-emit-an-event-and-reject-self",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "feat/issue-857-feat-contracts-emit-an-event-and-reject-self": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-857-feat-contracts-emit-an-event-and-reject-self",
+    "origin"
+  ]
+}
